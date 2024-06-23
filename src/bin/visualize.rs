@@ -9,8 +9,8 @@ use std::io::Read;
 #[derive(Serialize, Deserialize)]
 struct ProcessedData {
     curves: Vec<Vec<Point2>>,
-    coefficients: Vec<Vec<f32>>,
-    basis: Vec<Vec<f32>>,
+    coefficients: Vec<Vec<f64>>,
+    basis: Vec<Vec<f64>>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,10 +28,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.read_to_string(&mut contents)?;
     let data: ProcessedData = serde_json::from_str(&contents)?;
 
-    // Perform dimensionality reduction (PCA)
-    let (reduced_coeffs, _) = perform_pca(&data.coefficients, 2);
+    println!("Loaded {} curves", data.curves.len());
+    println!("Coefficient dimensions: {}", data.coefficients[0].len());
 
-    // Initialize Raylib
+    // Convert coefficients to 2d.
+    let n_components = 2;
+    let coeffs = vec_to_matrix_rows(data.coefficients.clone());
+    let reduced_coeffs = perform_pca(&coeffs, n_components);
+
+    println!("Reduced coefficients shape: {:?}", reduced_coeffs.shape());
+
     let (mut rl, thread) = raylib::init()
         .size(800, 600)
         .title("Curve Visualization")
@@ -42,159 +48,166 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         d.clear_background(Color::WHITE);
 
-        // Draw reduced coefficient space
-        draw_coefficient_space(&mut d, &reduced_coeffs);
+        let viewport = calculate_viewport(
+            &reduced_coeffs,
+            d.get_screen_width() as f32,
+            d.get_screen_height() as f32,
+        );
 
-        // Draw curves at their coefficient positions
-        for (curve, coeff) in data.curves.iter().zip(reduced_coeffs.iter()) {
-            draw_curve_at_position(&mut d, curve, coeff[0], coeff[1]);
+        // Draw curves and points
+        for (curve, coeff) in data.curves.iter().zip(reduced_coeffs.row_iter()) {
+            draw_curve(&mut d, &viewport, curve, coeff[0], coeff[1]);
+            draw_point(&mut d, &viewport, coeff[0], coeff[1], Color::RED);
         }
     }
 
     Ok(())
 }
 
-fn perform_pca(data: &[Vec<f32>], components: usize) -> (Vec<Vec<f32>>, na::DMatrix<f32>) {
-    let rows: Vec<na::DVector<f32>> = data
-        .iter()
-        .map(|row| na::DVector::from_vec(row.clone()))
-        .collect();
-    let matrix = na::DMatrix::from_columns(&rows);
+fn vec_to_matrix_rows(data: Vec<Vec<f64>>) -> na::DMatrix<f64> {
+    let rows = data.len();
+    let cols = data[0].len(); // Assuming all inner vectors have the same length
+    let flat_data: Vec<f64> = data.into_iter().flatten().collect();
+    na::DMatrix::from_row_slice(rows, cols, &flat_data)
+}
 
-    println!("Matrix dimensions: {}x{}", matrix.nrows(), matrix.ncols());
+fn perform_pca(data: &na::DMatrix<f64>, n_components: usize) -> na::DMatrix<f64> {
+    let (nrows, ncols) = data.shape();
+    println!("Input data shape: {}x{}", nrows, ncols);
 
-    let mean = matrix.column_mean();
+    // Compute the mean of each column (feature)
+    let mean = data.row_mean();
+    println!("Mean shape: {}x{}", mean.nrows(), mean.ncols());
 
-    println!("Mean dimensions: {}x{}", mean.nrows(), mean.ncols());
-
-    // Ensure mean is a column vector
-    let mean_column = na::DVector::from_iterator(mean.len(), mean.iter().cloned());
-
+    // Center the data
+    let mut centered = data.clone();
+    for i in 0..nrows {
+        centered.set_row(i, &(centered.row(i) - &mean));
+    }
     println!(
-        "Mean column dimensions: {}x{}",
-        mean_column.nrows(),
-        mean_column.ncols()
-    );
-
-    // Broadcast subtraction
-    let centered = matrix
-        .column_iter()
-        .map(|col| col - &mean_column)
-        .collect::<Vec<_>>();
-    let centered = na::DMatrix::from_columns(&centered);
-
-    println!(
-        "Centered matrix dimensions: {}x{}",
+        "Centered data shape: {}x{}",
         centered.nrows(),
         centered.ncols()
     );
 
-    let cov = (centered.transpose() * &centered) / (data.len() as f32 - 1.0);
+    // Perform SVD on the centered data
+    let svd = na::SVD::new(centered.clone(), true, true);
 
+    // Get the right singular vectors (V)
+    let v = svd.v_t.unwrap().transpose();
+    println!("V shape: {}x{}", v.nrows(), v.ncols());
+
+    // Select the top n_components
+    let pc = v.columns(0, n_components.min(ncols));
+    println!("PC shape: {}x{}", pc.nrows(), pc.ncols());
+
+    // Project the centered data onto the principal components
     println!(
-        "Covariance matrix dimensions: {}x{}",
-        cov.nrows(),
-        cov.ncols()
+        "Projection shapes: ({} x {}) * ({} x {})",
+        centered.nrows(),
+        centered.ncols(),
+        pc.nrows(),
+        pc.ncols()
     );
 
-    let eigen = na::SymmetricEigen::new(cov);
+    let result = centered * pc;
+    println!("Result shape: {}x{}", result.nrows(), result.ncols());
 
-    // Extract the first 'components' eigenvectors and convert to DMatrix
-    let proj_matrix = na::DMatrix::from_iterator(
-        eigen.eigenvectors.nrows(),
-        components,
-        eigen.eigenvectors.columns(0, components).iter().cloned(),
-    );
-
-    println!(
-        "Projection matrix dimensions: {}x{}",
-        proj_matrix.nrows(),
-        proj_matrix.ncols()
-    );
-
-    let projected = &centered * &proj_matrix;
-
-    println!(
-        "Projected data dimensions: {}x{}",
-        projected.nrows(),
-        projected.ncols()
-    );
-
-    (
-        projected
-            .row_iter()
-            .map(|row| row.iter().cloned().collect())
-            .collect(),
-        proj_matrix,
-    )
+    result
 }
 
-// fn perform_pca(data: &[Vec<f32>], components: usize) -> (Vec<Vec<f32>>, na::DMatrix<f32>) {
-//     let rows: Vec<na::OVector<f32, na::Dyn>> = data.iter()
-//         .map(|row| na::OVector<f32, na::Dyn>::from_vec(row.clone()))
-//         .collect();
-//
-//     let matrix = na::DMatrix::from_rows(&rows);
-//     let mean = matrix.column_mean();
-//     let centered = &matrix - mean.transpose();
-//     let cov = (centered.transpose() * &centered) / (data.len() as f32 - 1.0);
-//
-//     let eigen = na::SymmetricEigen::new(cov);
-//     let proj_matrix = eigen.eigenvectors.columns(0, components).into_owned();
-//
-//     let projected = &centered * &proj_matrix;
-//
-//     (projected.row_iter().map(|row| row.iter().cloned().collect()).collect(), proj_matrix)
-// }
+const CURVE_SIZE: f32 = 80.0; // Size of each curve
+const POINT_RADIUS: f32 = 5.0; // Radius of the red circles representing points
+const CURVE_CENTER_RADIUS: f32 = 3.0;
 
-fn draw_coefficient_space(d: &mut RaylibDrawHandle, coeffs: &[Vec<f32>]) {
-    let width = d.get_screen_width() as f32;
-    let height = d.get_screen_height() as f32;
+struct Viewport {
+    scale: f32,
+    offset_x: f32,
+    offset_y: f32,
+    height: f32,
+}
 
-    let x_min = coeffs.iter().map(|c| c[0]).fold(f32::INFINITY, f32::min);
-    let x_max = coeffs
-        .iter()
-        .map(|c| c[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let y_min = coeffs.iter().map(|c| c[1]).fold(f32::INFINITY, f32::min);
-    let y_max = coeffs
-        .iter()
-        .map(|c| c[1])
-        .fold(f32::NEG_INFINITY, f32::max);
+fn calculate_viewport(coeffs: &na::DMatrix<f64>, width: f32, height: f32) -> Viewport {
+    let x_min = coeffs.column(0).min();
+    let x_max = coeffs.column(0).max();
+    let y_min = coeffs.column(1).min();
+    let y_max = coeffs.column(1).max();
 
-    let scale_x = (width - 100.0) / (x_max - x_min);
-    let scale_y = (height - 100.0) / (y_max - y_min);
+    let data_width = (x_max - x_min) as f32;
+    let data_height = (y_max - y_min) as f32;
 
-    for coeff in coeffs {
-        let x = (coeff[0] - x_min) * scale_x + 50.0;
-        let y = (coeff[1] - y_min) * scale_y + 50.0;
-        d.draw_circle(x as i32, y as i32, 3.0, Color::RED);
+    let margin = CURVE_SIZE / 2.0 + POINT_RADIUS;
+    let scale_x = (width - 2.0 * margin) / data_width;
+    let scale_y = (height - 2.0 * margin) / data_height;
+    let scale = scale_x.min(scale_y);
+
+    let center_x = (x_min + x_max) / 2.0;
+    let center_y = (y_min + y_max) / 2.0;
+
+    Viewport {
+        scale,
+        offset_x: width / 2.0 - (center_x as f32 * scale),
+        offset_y: height / 2.0 - (center_y as f32 * scale),
+        height,
     }
 }
 
-fn draw_curve_at_position(d: &mut RaylibDrawHandle, curve: &[Point2], x: f32, y: f32) {
-    let width = d.get_screen_width() as f32;
-    let height = d.get_screen_height() as f32;
+fn draw_point(d: &mut RaylibDrawHandle, viewport: &Viewport, x: f64, y: f64, color: Color) {
+    let screen_x = (x as f32 * viewport.scale + viewport.offset_x) as i32;
+    let screen_y = (viewport.height - (y as f32 * viewport.scale + viewport.offset_y)) as i32;
+    d.draw_circle(screen_x, screen_y, POINT_RADIUS, color);
+}
 
-    let rect_size = 30.0;
-    let scale = rect_size
-        / curve
-            .iter()
-            .map(|p| p.x.max(p.y))
-            .fold(f32::NEG_INFINITY, f32::max);
+fn normalize_curve(curve: &[Point2]) -> Vec<Point2> {
+    // Find the bounding box
+    let min_x = curve.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let max_x = curve.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+    let min_y = curve.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let max_y = curve.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
 
-    let x_min = curve.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
-    let y_min = curve.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let width = max_x - min_x;
+    let height = max_y - min_y;
 
-    for window in curve.windows(2) {
+    // Calculate the center of the curve
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+
+    // Calculate the scaling factor
+    let scale = (CURVE_SIZE - 4.0) / width.max(height);
+
+    // Normalize and center the curve
+    curve
+        .iter()
+        .map(|p| Point2 {
+            x: (p.x - center_x) * scale,
+            y: (p.y - center_y) * scale,
+        })
+        .collect()
+}
+
+fn draw_curve(d: &mut RaylibDrawHandle, viewport: &Viewport, curve: &[Point2], x: f64, y: f64) {
+    let normalized = normalize_curve(curve);
+    let screen_x = (x as f32 * viewport.scale + viewport.offset_x) as f32;
+    let screen_y = (viewport.height - (y as f32 * viewport.scale + viewport.offset_y)) as f32;
+
+    for window in normalized.windows(2) {
         let start = &window[0];
         let end = &window[1];
+
         d.draw_line(
-            (x + (start.x - x_min) * scale) as i32,
-            (y + (start.y - y_min) * scale) as i32,
-            (x + (end.x - x_min) * scale) as i32,
-            (y + (end.y - y_min) * scale) as i32,
+            (start.x + screen_x) as i32,
+            (start.y + screen_y) as i32,
+            (end.x + screen_x) as i32,
+            (end.y + screen_y) as i32,
             Color::BLUE,
         );
     }
+
+    // Draw a small green circle at the center of the curve
+    d.draw_circle(
+        screen_x as i32,
+        screen_y as i32,
+        CURVE_CENTER_RADIUS,
+        Color::GREEN,
+    );
 }

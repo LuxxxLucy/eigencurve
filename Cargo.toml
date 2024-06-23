@@ -1,0 +1,23 @@
+[package]
+name = "eigencurve"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ttf-parser = "0.21.1"
+nalgebra = "0.32.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+raylib = "3.7"
+
+[lib]
+name = "eigencurve"
+path = "src/lib.rs"
+
+[[bin]]
+name = "process"
+path = "src/bin/process.rs"
+
+[[bin]]
+name = "visualize"
+path = "src/bin/visualize.rs"

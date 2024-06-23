@@ -1,8 +1,8 @@
 mod curve;
 pub mod encoding;
 
-pub use curve::{Curve, Point2, sample_curve, load_font_curves};
-pub use encoding::{CurveEncoder, CurveDecoder, SVDEncoder};
+pub use curve::{load_font_curves, sample_curve, Curve, Point2};
+pub use encoding::{CurveDecoder, CurveEncoder, SVDEncoder};
 
 use serde::{Deserialize, Serialize};
 

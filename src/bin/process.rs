@@ -3,9 +3,13 @@ use std::fs::File;
 use std::io::Write;
 
 use eigencurve::{
-    Curve, Point2, ProcessedData,
-    CurveEncoder, SVDEncoder,  // Import directly from the crate root
-    load_font_curves, sample_curve,
+    load_font_curves,
+    sample_curve,
+    Curve,
+    CurveEncoder,
+    Point2,
+    ProcessedData,
+    SVDEncoder, // Import directly from the crate root
 };
 use nalgebra as na;
 
@@ -33,9 +37,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Training Results:");
     println!("----------------");
     println!("Number of input curves: {}", curves.len());
-    println!("Number of sample points per curve: {}", encoder.num_sample_points());
-    println!("Basis shape: {} x {}", encoder.get_basis().nrows(), encoder.get_basis().ncols());
-    println!("Number of basis vectors (K): {}", encoder.num_basis_vectors());
+    println!(
+        "Number of sample points per curve: {}",
+        encoder.num_sample_points()
+    );
+    println!(
+        "Basis shape: {} x {}",
+        encoder.get_basis().nrows(),
+        encoder.get_basis().ncols()
+    );
+    println!(
+        "Number of basis vectors (K): {}",
+        encoder.num_basis_vectors()
+    );
     println!("----------------\n");
 
     evaluate_approximation(&curves, &encoder);
@@ -45,9 +59,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Prepare data for storage
     let processed_data = ProcessedData {
-        curves: curves.iter().map(|c| sample_curve(c, encoder.num_sample_points())).collect(),
+        curves: curves
+            .iter()
+            .map(|c| sample_curve(c, encoder.num_sample_points()))
+            .collect(),
         coefficients: embeddings.iter().map(|c| c.as_slice().to_vec()).collect(),
-        basis: encoder.get_basis().column_iter().map(|c| c.iter().cloned().collect()).collect(),
+        basis: encoder
+            .get_basis()
+            .column_iter()
+            .map(|c| c.iter().cloned().collect())
+            .collect(),
     };
 
     // Store data
